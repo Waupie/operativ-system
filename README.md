@@ -4,5 +4,7 @@
 
 "sudo dmesg" / "sudo dmesg | tail" to print terminal with either all or the end of the prints(tail for smaller prints)
 
-"sudo rmmod my_module" to unload the module
+"sudo rmmod my_module" to unload the module (do make clean aswell)
+
+"make clean" clean
 
