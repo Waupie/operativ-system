@@ -1,6 +1,61 @@
+
 #include "../src/hashtable_module.h"
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/random.h>
+#define NUM_THREADS 4
+#define NUM_OPS 100
+
+struct thread_args {
+    ht *table;
+    int id;
+};
+
+static int hashtable_thread(void *data) {
+    struct thread_args *args = (struct thread_args *)data;
+    char key[16], val[16];
+    for (int i = 0; i < NUM_OPS; i++) {
+        int op = get_random_u32() % 3;
+        int n = get_random_u32() % 50;
+        snprintf(key, sizeof(key), "k%d", n);
+        snprintf(val, sizeof(val), "v%d", n);
+        if (op == 0) {
+            ht_insert(args->table, key, kstrdup(val, GFP_KERNEL));
+            printk(KERN_INFO "[T%d] Inserted %s => %s\n", args->id, key, val);
+        } else if (op == 1) {
+            char *found = ht_search(args->table, key);
+            if (found)
+                printk(KERN_INFO "[T%d] Found %s => %s\n", args->id, key, found);
+        } else {
+            ht_delete(args->table, key);
+            printk(KERN_INFO "[T%d] Deleted %s\n", args->id, key);
+        }
+        msleep(10);
+    }
+    return 0;
+}
+
+void test_hashtable_concurrent(void)
+{
+    ht *table = create_ht();
+    struct task_struct *threads[NUM_THREADS];
+    struct thread_args args[NUM_THREADS];
+    printk(KERN_INFO "=== Concurrent Hashtable test start ===\n");
+    for (int i = 0; i < NUM_THREADS; i++) {
+        args[i].table = table;
+        args[i].id = i;
+        threads[i] = kthread_run(hashtable_thread, &args[i], "ht_tester_%d", i);
+    }
+    for (int i = 0; i < NUM_THREADS; i++) {
+        if (threads[i])
+            kthread_stop(threads[i]);
+    }
+    destroy_ht(table);
+    printk(KERN_INFO "=== Concurrent Hashtable test end ===\n");
+}
+
 
 void test_hashtable(void)
 {

@@ -17,6 +17,7 @@ typedef struct ht
 {
     int capacity;
     struct ht_entry** entries;
+    spinlock_t lock;
 } ht;
 
 ht* create_ht(void);
@@ -28,5 +29,6 @@ char* ht_search(ht* table, const char* key);
 void test_hashtable(void);
 int init_module(void);
 void cleanup_module(void);
+void test_hashtable_concurrent(void);
 
 #endif

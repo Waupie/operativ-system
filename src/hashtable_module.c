@@ -19,11 +19,13 @@ ht* create_ht(void)
         kfree(table);
         return NULL;
     }
+    spin_lock_init(&table->lock);
     return table;
 }
 
 void destroy_ht(ht* table)
 {
+    spin_lock(&table->lock);
     for(int i = 0; i < table->capacity; i++)
     {
         struct ht_entry* entry = table->entries[i];
@@ -36,8 +38,8 @@ void destroy_ht(ht* table)
             kfree(temp);
         }
     }
-
     kfree(table->entries);
+    spin_unlock(&table->lock);
     kfree(table);
 }
 
@@ -56,6 +58,8 @@ uint64_t hash_key(const char* key)
 
 int ht_insert(ht* table, const char* key, char* value)
 {
+    int ret = 0;
+    spin_lock(&table->lock);
     uint64_t hash = hash_key(key);
     int index = (int)(hash % table->capacity);
 
@@ -69,31 +73,40 @@ int ht_insert(ht* table, const char* key, char* value)
             if (entry->value == NULL) {
                 kfree(entry->key);
                 kfree(entry);
-                return -ENOMEM;
+                ret = -ENOMEM;
+                goto out;
             }
-            return 0;
+            ret = 0;
+            goto out;
         }
         entry = entry->next;
     }
     entry = kmalloc(sizeof(ht_entry), GFP_KERNEL);
     if(entry == NULL)
     {
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto out;
     }
     entry->key = kstrdup(key, GFP_KERNEL);
     if(entry->key == NULL)
     {
         kfree(entry);
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto out;
     } 
     entry->value = kstrdup(value, GFP_KERNEL);
     entry->next = table->entries[index];
     table->entries[index] = entry;
-    return 0;
+    ret = 0;
+out:
+    spin_unlock(&table->lock);
+    return ret;
 }
 
 int ht_delete(ht* table, const char* key)
 {
+    int ret = -ENOENT;
+    spin_lock(&table->lock);
     uint64_t hash = hash_key(key);
     int index = (int)(hash % table->capacity);
 
@@ -114,16 +127,20 @@ int ht_delete(ht* table, const char* key)
             kfree(entry->key);
             kfree(entry->value);
             kfree(entry);
-            return 0;
+            ret = 0;
+            break;
         }
         prevEntry = entry;
         entry = entry->next;
     }
-    return -ENOENT;
+    spin_unlock(&table->lock);
+    return ret;
 }
 
 char* ht_search(ht* table, const char* key)
 {
+    char* result = NULL;
+    spin_lock(&table->lock);
     uint64_t hash = hash_key(key);
     int index = (int)(hash % table->capacity);
 
@@ -132,12 +149,15 @@ char* ht_search(ht* table, const char* key)
     {
         if(!strcmp(entry->key, key))
         {
-            return entry->value;
+            result = entry->value;
+            break;
         }
         entry = entry->next;
     }
-    printk(KERN_INFO "No value found for key: %s\n", key);
-    return NULL;
+    spin_unlock(&table->lock);
+    if (!result)
+        printk(KERN_INFO "No value found for key: %s\n", key);
+    return result;
 }
 
 // void test_hashtable(void)
