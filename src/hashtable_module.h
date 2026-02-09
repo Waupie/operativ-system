@@ -17,7 +17,7 @@ typedef struct ht
 {
     int capacity;
     struct ht_entry** entries;
-    spinlock_t lock;
+    spinlock_t* bucket_locks;
 } ht;
 
 ht* create_ht(void);
