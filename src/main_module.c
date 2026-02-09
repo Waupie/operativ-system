@@ -3,17 +3,24 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
+#include <linux/list.h>
+#include <linux/slab.h>
 #include <linux/rwsem.h>
 #include "hashtable_module.h"
 
 #define PROC_BUF_SIZE 512
 
+
 static DECLARE_RWSEM(ht_sem);
 static struct proc_dir_entry *proc_file;
 static ht *table;
 
-static char proc_output[PROC_BUF_SIZE];
-static size_t proc_output_len;
+
+struct cmd_entry {
+    char text[PROC_BUF_SIZE];
+    struct list_head list;
+};
+static LIST_HEAD(cmd_history);
 
 
 static ssize_t my_read(struct file *file,
@@ -21,16 +28,29 @@ static ssize_t my_read(struct file *file,
                        size_t count,
                        loff_t *offs)
 {
-    if (*offs >= proc_output_len)
-        return 0;
+    struct cmd_entry *entry;
+    char buf[PROC_BUF_SIZE];
+    int len = 0;
 
-    if (copy_to_user(user_buffer, proc_output, proc_output_len))
+    if (*offs > 0)
+        return 0;  // EOF
+
+    memset(buf, 0, PROC_BUF_SIZE);
+
+    down_read(&ht_sem);
+    list_for_each_entry(entry, &cmd_history, list) {
+        len += snprintf(buf + len, PROC_BUF_SIZE - len, "%s\n", entry->text);
+        if (len >= PROC_BUF_SIZE - 1)
+            break;
+    }
+    up_read(&ht_sem);
+
+    if (copy_to_user(user_buffer, buf, len))
         return -EFAULT;
 
-    *offs = proc_output_len;
-    return proc_output_len;
+    *offs = len;
+    return len;
 }
-
 
 static ssize_t my_write(struct file *file,
                         const char __user *user_buffer,
@@ -40,9 +60,10 @@ static ssize_t my_write(struct file *file,
     char buf[256];
     char cmd[16], key[64], value[64];
     int ret = 0;
+    char output[PROC_BUF_SIZE];
 
-    memset(proc_output, 0, PROC_BUF_SIZE);
-    proc_output_len = 0;
+    memset(buf, 0, sizeof(buf));
+    memset(output, 0, sizeof(output));
 
     if (count >= sizeof(buf))
         return -EINVAL;
@@ -57,38 +78,43 @@ static ssize_t my_write(struct file *file,
         return count;
 
     if (!strcmp(cmd, "insert")) {
-
         down_write(&ht_sem);
         ret = ht_insert(table, key, value);
         up_write(&ht_sem);
 
-        proc_output_len = snprintf(proc_output, PROC_BUF_SIZE,
-                                   ret ? "Insert failed\n" : "Inserted\n");
+        snprintf(output, PROC_BUF_SIZE, ret ? "Insert failed" : "Inserted");
 
     } else if (!strcmp(cmd, "delete")) {
-
         down_write(&ht_sem);
         ret = ht_delete(table, key);
         up_write(&ht_sem);
 
-        proc_output_len = snprintf(proc_output, PROC_BUF_SIZE,
-                                   ret ? "Delete failed\n" : "Deleted\n");
+        snprintf(output, PROC_BUF_SIZE, ret ? "Delete failed" : "Deleted");
 
     } else if (!strcmp(cmd, "lookup")) {
-
         const char *res;
-
         down_read(&ht_sem);
         res = ht_search(table, key);
         if (res)
-            proc_output_len = snprintf(proc_output, PROC_BUF_SIZE, "%s\n", res);
+            snprintf(output, PROC_BUF_SIZE, "%s", res);
         else
-            proc_output_len = snprintf(proc_output, PROC_BUF_SIZE, "Not found\n");
+            snprintf(output, PROC_BUF_SIZE, "Not found");
         up_read(&ht_sem);
 
     } else {
-        proc_output_len = snprintf(proc_output, PROC_BUF_SIZE,
-                                   "Unknown command\n");
+        snprintf(output, PROC_BUF_SIZE, "Unknown command");
+    }
+
+    {
+        struct cmd_entry *entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+        if (entry) {
+            strncpy(entry->text, output, PROC_BUF_SIZE - 1);
+            entry->text[PROC_BUF_SIZE - 1] = '\0';
+
+            down_write(&ht_sem);
+            list_add_tail(&entry->list, &cmd_history);
+            up_write(&ht_sem);
+        }
     }
 
     return count;
@@ -96,7 +122,7 @@ static ssize_t my_write(struct file *file,
 
 
 static struct proc_ops my_proc_ops = {
-    .proc_read  = my_read,
+    .proc_read = my_read,
     .proc_write = my_write,
 };
 
@@ -119,9 +145,16 @@ int init_module(void)
 
 void cleanup_module(void)
 {
+    struct cmd_entry *entry, *tmp;
+
     proc_remove(proc_file);
 
     down_write(&ht_sem);
+    list_for_each_entry_safe(entry, tmp, &cmd_history, list) {
+        list_del(&entry->list);
+        kfree(entry);
+    }
+
     destroy_ht(table);
     up_write(&ht_sem);
 
