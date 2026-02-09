@@ -8,6 +8,7 @@ int init_module(void)
 {
     printk(KERN_INFO "Hello, World!\n");
     test_hashtable();
+    test_hashtable_concurrent();
     return 0;
 }
 
