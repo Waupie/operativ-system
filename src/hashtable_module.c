@@ -61,16 +61,18 @@ int ht_insert(ht* table, const char* key, char* value)
     struct ht_entry* entry = table->entries[index];
     while(entry != NULL)
     {
-        if(!strcmp(entry->key, key))
+        if (!strcmp(entry->key, key))
         {
-            kfree(entry->value); 
-            entry->value = kstrdup(value, GFP_KERNEL);
-            if (entry->value == NULL) {
-                kfree(entry->key);
-                kfree(entry);
+            char *new_value;
+
+            new_value = kstrdup(value, GFP_KERNEL);
+            if (!new_value) {
                 ret = -ENOMEM;
                 goto out;
             }
+
+            kfree(entry->value);
+            entry->value = new_value;
             ret = 0;
             goto out;
         }
@@ -90,6 +92,13 @@ int ht_insert(ht* table, const char* key, char* value)
         goto out;
     } 
     entry->value = kstrdup(value, GFP_KERNEL);
+    if (!entry->value) 
+    {
+        kfree(entry->key);
+        kfree(entry);
+        ret = -ENOMEM;
+        goto out;
+    }
     entry->next = table->entries[index];
     table->entries[index] = entry;
     ret = 0;
@@ -130,20 +139,15 @@ int ht_delete(ht* table, const char* key)
 
 char* ht_search(ht* table, const char* key)
 {
-    char* result = NULL;
     uint64_t hash = hash_key(key);
-    int index = (int)(hash % table->capacity);
+    int index = hash % table->capacity;
     struct ht_entry* entry = table->entries[index];
-    while(entry != NULL)
-    {
-        if(!strcmp(entry->key, key))
-        {
-            result = entry->value;
-            break;
-        }
+
+    while (entry) {
+        if (!strcmp(entry->key, key))
+            return entry->value;
         entry = entry->next;
     }
-    if (!result)
-        printk(KERN_INFO "No value found for key: %s\n", key);
-    return result;
+
+    return NULL;
 }
