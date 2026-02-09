@@ -5,6 +5,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/string.h>
+#include <linux/rwlock.h>
 
 typedef struct ht_entry 
 {
@@ -17,7 +18,6 @@ typedef struct ht
 {
     int capacity;
     struct ht_entry** entries;
-    spinlock_t* bucket_locks;
 } ht;
 
 ht* create_ht(void);
