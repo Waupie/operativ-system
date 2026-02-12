@@ -1,5 +1,5 @@
 obj-m += my_module.o
-my_module-objs := src/main_module.o src/hashtable_module.o tests/test_hashtable.o
+my_module-objs := src/main_module.o src/hashtable_module.o src/proc_handlers.o src/daemon_signal.o src/cmd_history.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
