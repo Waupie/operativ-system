@@ -6,106 +6,122 @@
 #include <linux/list.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 
 #include "hashtable_module.h"
 
-#define PROC_BUF_SIZE PAGE_SIZE
-
-//synchronization for hashtable access
+#define PROC_BUF_SIZE 512
 
 static DECLARE_RWSEM(ht_sem);
 
-//proc
-
 static struct proc_dir_entry *proc_ht;
-static struct proc_dir_entry *proc_lookup;
 static struct proc_dir_entry *proc_hashtable;
+static struct proc_dir_entry *proc_daemonpid;
 
+static pid_t daemon_pid = -1;
 
-//global variables
 static ht *table;
 
-struct lookup_session {
-    pid_t pid;
-    char buf[PROC_BUF_SIZE];
-    size_t len;
+struct cmd_entry {
+    char text[PROC_BUF_SIZE];
     struct list_head list;
 };
+static LIST_HEAD(cmd_history);
 
-static LIST_HEAD(lookup_sessions);
+static void signal_daemon(void);
 
-
-//helper func
-static struct lookup_session *get_session(pid_t pid)
+void signal_daemon(void)
 {
-    struct lookup_session *s;
+    struct pid *pid_struct;
+    struct task_struct *task;
 
-    list_for_each_entry(s, &lookup_sessions, list) {
-        if (s->pid == pid)
-            return s;
-    }
+    if (daemon_pid <= 0)
+        return;
 
-    s = kmalloc(sizeof(*s), GFP_KERNEL);
-    if (!s)
-        return NULL;
+    pid_struct = find_get_pid(daemon_pid);
+    if (!pid_struct)
+        return;
 
-    s->pid = pid;
-    s->len = 0;
-    list_add_tail(&s->list, &lookup_sessions);
+    task = pid_task(pid_struct, PIDTYPE_PID);
+    if (!task)
+        return;
 
-    return s;
+    send_sig_info(SIGUSR1, SEND_SIG_PRIV, task);
+    printk(KERN_INFO "Sent SIGUSR1 to daemon PID %d\n", daemon_pid);
 }
-/*
- * /proc/ht
- *   write: insert/delete/lookup
- *   read : current hashtable
- */
 
+
+/* /proc/ht
+ * write: insert/delete/lookup
+ * read : returns last lookup result for the calling process
+ */
 static ssize_t ht_write(struct file *file,
                         const char __user *user_buffer,
                         size_t count,
                         loff_t *offs)
 {
-    char input[256];
-    char cmd[16], key[128], value[128];
-    struct lookup_session *s;
-    const char *res;
+    char buf[256];
+    char cmd[16], key[64], value[64];
+    int ret = 0;
+    char output[PROC_BUF_SIZE];
 
-    if (count >= sizeof(input))
+    memset(buf, 0, sizeof(buf));
+    memset(output, 0, sizeof(output));
+
+    if (count >= sizeof(buf))
         return -EINVAL;
 
-    if (copy_from_user(input, user_buffer, count))
+    if (copy_from_user(buf, user_buffer, count))
         return -EFAULT;
 
-    input[count] = '\0';
-    input[strcspn(input, "\n")] = 0;
+    buf[count] = '\0';
+    buf[strcspn(buf, "\n")] = 0;
 
-    if (sscanf(input, "%15s %127s %127s", cmd, key, value) < 2)
+    if (sscanf(buf, "%15s %63s %63s", cmd, key, value) < 1)
         return count;
 
-    down_write(&ht_sem);
-
     if (!strcmp(cmd, "insert")) {
-        ht_insert(table, key, value);
+        down_write(&ht_sem);
+        ret = ht_insert(table, key, value);
+        signal_daemon();
+        up_write(&ht_sem);
+
+        snprintf(output, PROC_BUF_SIZE, ret ? "Insert failed" : "Inserted key: %s, value: %s", key, value);
 
     } else if (!strcmp(cmd, "delete")) {
-        ht_delete(table, key);
+        down_write(&ht_sem);
+        ret = ht_delete(table, key);
+        signal_daemon();
+        up_write(&ht_sem);
+
+        snprintf(output, PROC_BUF_SIZE, ret ? "Delete failed" : "Deleted key: %s", key);
 
     } else if (!strcmp(cmd, "lookup")) {
-        s = get_session(current->pid);
-        if (s && s->len < PROC_BUF_SIZE) {
-            res = ht_search(table, key);
-            s->len += scnprintf(
-                s->buf + s->len,
-                PROC_BUF_SIZE - s->len,
-                res ? "lookup %s=%s\n"
-                    : "lookup %s: not found\n",
-                key, res ?: ""
-            );
+        const char *res;
+        down_read(&ht_sem);
+        res = ht_search(table, key);
+        if (res)
+            snprintf(output, PROC_BUF_SIZE, "Lookup on key: %s, gave value: %s", key, res);
+        else
+            snprintf(output, PROC_BUF_SIZE, "Not found");
+        up_read(&ht_sem);
+
+    } else {
+        snprintf(output, PROC_BUF_SIZE, "Unknown command");
+    }
+
+    {
+        struct cmd_entry *entry = kmalloc(sizeof(*entry), GFP_KERNEL);
+        if (entry) {
+            strncpy(entry->text, output, PROC_BUF_SIZE - 1);
+            entry->text[PROC_BUF_SIZE - 1] = '\0';
+
+            down_write(&ht_sem);
+            list_add_tail(&entry->list, &cmd_history);
+            up_write(&ht_sem);
         }
     }
 
-    up_write(&ht_sem);
     return count;
 }
 
@@ -114,80 +130,32 @@ static ssize_t ht_read(struct file *file,
                        size_t count,
                        loff_t *offs)
 {
+    struct cmd_entry *entry;
     char buf[PROC_BUF_SIZE];
-    size_t len = 0;
-    int i;
-    ht_entry *e;
+    int len = 0;
 
     if (*offs > 0)
-        return 0;
+        return 0;  // EOF
+
+    memset(buf, 0, PROC_BUF_SIZE);
 
     down_read(&ht_sem);
-
-    len += scnprintf(buf + len, PROC_BUF_SIZE - len,
-                     "Hashtable:\n");
-
-    for (i = 0; i < table->capacity; i++) {
-        e = table->entries[i];
-        while (e) {
-            len += scnprintf(buf + len,
-                             PROC_BUF_SIZE - len,
-                             "%s=%s\n",
-                             e->key, e->value);
-            if (len >= PROC_BUF_SIZE - 1)
-                break;
-            e = e->next;
-        }
+    list_for_each_entry(entry, &cmd_history, list) {
+        len += snprintf(buf + len, PROC_BUF_SIZE - len, "%s\n", entry->text);
+        if (len >= PROC_BUF_SIZE - 1)
+            break;
     }
-
     up_read(&ht_sem);
 
-    return simple_read_from_buffer(
-        user_buffer, count, offs, buf, len
-    );
+    if (copy_to_user(user_buffer, buf, len))
+        return -EFAULT;
+
+    *offs = len;
+    return len;
 }
-
-static const struct proc_ops ht_proc_ops = {
-    .proc_read  = ht_read,
-    .proc_write = ht_write,
-};
-
-/*
- * /proc/lookup 
- *  read: lookup value for key
-*/
-
-static ssize_t lookup_read(struct file *file,
-                           char __user *user_buffer,
-                           size_t count,
-                           loff_t *offs)
-{
-    struct lookup_session *s;
-
-    if (*offs > 0)
-        return 0;
-
-    down_read(&ht_sem);
-    s = get_session(current->pid);
-    up_read(&ht_sem);
-
-    if (!s)
-        return 0;
-
-    return simple_read_from_buffer(
-        user_buffer, count, offs, s->buf, s->len
-    );
-}
-
-static const struct proc_ops lookup_proc_ops = {
-    .proc_read = lookup_read,
-};
-
-/* 
- * /proc/hashtable
- *  read: current hashtable for daemon
-*/
-
+/* /proc/hashtable
+ * read only: prints entire table for daemon
+ */
 static ssize_t daemon_ht_read(struct file *file,
                               char __user *user_buffer,
                               size_t count,
@@ -206,10 +174,8 @@ static ssize_t daemon_ht_read(struct file *file,
     for (i = 0; i < table->capacity; i++) {
         e = table->entries[i];
         while (e) {
-            len += scnprintf(buf + len,
-                             PROC_BUF_SIZE - len,
-                             "%s %s\n",
-                             e->key, e->value);
+            len += scnprintf(buf + len, PROC_BUF_SIZE - len,
+                             "%s %s\n", e->key, e->value);
             if (len >= PROC_BUF_SIZE - 1)
                 break;
             e = e->next;
@@ -218,59 +184,107 @@ static ssize_t daemon_ht_read(struct file *file,
 
     up_read(&ht_sem);
 
-    return simple_read_from_buffer(
-        user_buffer, count, offs, buf, len
-    );
+    return simple_read_from_buffer(user_buffer, count, offs, buf, len);
 }
 
-static const struct proc_ops hashtable_proc_ops = {
-    .proc_read = daemon_ht_read,
+static ssize_t daemonpid_read(struct file *file,
+                              char __user *user_buffer,
+                              size_t count,
+                              loff_t *offs)
+{
+    char buf[32];
+    int len;
+
+    if (*offs > 0)
+        return 0;
+
+    snprintf(buf, sizeof(buf), "%d\n", current->pid);
+    len = strlen(buf);
+
+    if (copy_to_user(user_buffer, buf, len))
+        return -EFAULT;
+
+    *offs = len;
+    return len;
+}
+
+static ssize_t daemonpid_write(struct file *file,
+                               const char __user *user_buffer,
+                               size_t count,
+                               loff_t *offs)
+{
+    char buf[32];
+    long pid;
+    
+    if (count >= sizeof(buf))
+        return -EINVAL;
+
+    if (copy_from_user(buf, user_buffer, count))
+        return -EFAULT;
+
+    buf[count] = '\0';
+
+    if (kstrtol(buf, 10, &pid) < 0)
+        return -EINVAL;
+
+    daemon_pid = (pid_t)pid;
+    printk(KERN_INFO "Daemon PID received: %d\n", daemon_pid);
+
+    return count;
+}
+
+
+static const struct proc_ops ht_proc_ops = {
+    .proc_read  = ht_read,
+    .proc_write = ht_write,
 };
 
+static const struct proc_ops hashtable_proc_ops = {
+    .proc_read  = daemon_ht_read,
+};
 
-//module init/exit (temporary)
-static int __init ht_init(void)
+static const struct proc_ops daemonpid_proc_ops = {
+    .proc_read  = daemonpid_read,
+    .proc_write = daemonpid_write,
+};
+
+int init_module(void)
 {
     table = create_ht();
     if (!table)
         return -ENOMEM;
 
     proc_ht = proc_create("ht", 0666, NULL, &ht_proc_ops);
-    proc_lookup = proc_create("lookup", 0444, NULL, &lookup_proc_ops);
-    proc_hashtable = proc_create("hashtable", 0444, NULL,
-                                 &hashtable_proc_ops);
+    proc_hashtable = proc_create("hashtable", 0444, NULL, &hashtable_proc_ops);
+    proc_daemonpid = proc_create("daemonpid", 0666, NULL, &daemonpid_proc_ops);
 
-    if (!proc_ht || !proc_lookup || !proc_hashtable) {
+    if (!proc_ht || !proc_hashtable || !proc_daemonpid) {
         destroy_ht(table);
         return -ENOMEM;
     }
 
-    printk(KERN_INFO "hashtable proc module loaded\n");
+    printk(KERN_INFO "Hashtable proc module loaded\n");
     return 0;
 }
 
-static void __exit ht_exit(void)
+void cleanup_module(void)
 {
-    struct lookup_session *s, *tmp;
+    struct cmd_entry *entry, *tmp;
 
     proc_remove(proc_ht);
-    proc_remove(proc_lookup);
     proc_remove(proc_hashtable);
+    proc_remove(proc_daemonpid);
 
     down_write(&ht_sem);
-    list_for_each_entry_safe(s, tmp, &lookup_sessions, list) {
-        list_del(&s->list);
-        kfree(s);
+    list_for_each_entry_safe(entry, tmp, &cmd_history, list) {
+        list_del(&entry->list);
+        kfree(entry);
     }
-    up_write(&ht_sem);
-
     destroy_ht(table);
-    printk(KERN_INFO "hashtable proc module unloaded\n");
+    up_write(&ht_sem);
+    printk(KERN_INFO "Hashtable proc module unloaded\n");
 }
-
-module_init(ht_init);
-module_exit(ht_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jack Edh");
-MODULE_DESCRIPTION("Hashtable kernel module with per-process lookup and daemon snapshot");
+MODULE_DESCRIPTION("Hashtable kernel module with per-process persistent lookup");

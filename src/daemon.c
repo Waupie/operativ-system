@@ -7,21 +7,23 @@ void handle_signal(int sig) {
 void write_pid_to_proc() {
     char buf[32];
     snprintf(buf, sizeof(buf), "%d\n", getpid());
-    int fd = open("/proc/daemonpid", O_WRONLY);
+    int fd = open("/proc/daemonpid", O_WRONLY | O_TRUNC);
     if (fd < 0) {
         perror("Failed to open /proc/daemonpid");
         return;
     }
-    write(fd, buf, strlen(buf));
+    if (write(fd, buf, strlen(buf)) != (ssize_t)strlen(buf)) {
+        perror("Failed to write PID to /proc/daemonpid");
+    }
     close(fd);
 }
 
 void save_hashtable(void)
 {
-    FILE *fp = fopen("/proc/ht", "r");
+    FILE *fp = fopen("/proc/hashtable", "r");
     if(!fp)
     {
-        perror("Failed to open /proc/ht in daemon");
+        perror("Failed to open /proc/hashtable in daemon");
         return;
     }
     FILE *backup = fopen("/tmp/hashtable_backup.txt", "w");
@@ -40,7 +42,8 @@ void save_hashtable(void)
     fclose(backup);
 }
 
-void daemonize() {
+void daemonize()
+{
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork failed");
@@ -54,11 +57,6 @@ void daemonize() {
         perror("setsid failed");
         exit(1);
     }
-}
-
-int main(void)
-{
-    daemonize();
 
     struct sigaction sa;
     sa.sa_handler = handle_signal;
@@ -68,6 +66,31 @@ int main(void)
         perror("sigaction failed");
         exit(1);
     }
+
+    pid = fork();
+    if (pid < 0) {
+        perror("Second fork failed");
+        exit(1);
+    }
+    
+    if (pid > 0) {
+        exit(0); // first child exits
+    }
+    umask(0);
+    if (chdir("/") < 0) {
+        perror("chdir failed");
+        exit(1);
+    }
+    int x;
+    for (x = sysconf(_SC_OPEN_MAX); x>=0; x--) {
+        close(x);
+    }
+
+}
+
+int main(void)
+{
+    daemonize();
 
     write_pid_to_proc();
 

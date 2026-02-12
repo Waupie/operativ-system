@@ -9,11 +9,14 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <stdint.h>
 #include "hashtable_module.h"
 
 static volatile sig_atomic_t save_flag = 0;
 
-static void save_hashtable(ht *table, char *filename);
+void handle_signal(int sig);
+void write_pid_to_proc();
+void save_hashtable(void);
 void daemonize();
 void daemon_func(void);
 
