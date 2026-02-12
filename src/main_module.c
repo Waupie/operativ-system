@@ -20,7 +20,11 @@ static DECLARE_RWSEM(ht_sem);
 static struct proc_dir_entry *proc_ht;
 static struct proc_dir_entry *proc_lookup;
 static struct proc_dir_entry *proc_hashtable;
+static struct proc_dir_entry *proc_daemonpid;
 
+//global buffer for daemon PID
+static char daemon_pid_buf[32] = "";
+static size_t daemon_pid_len = 0;
 
 //global variables
 static ht *table;
@@ -93,15 +97,14 @@ static ssize_t ht_write(struct file *file,
 
     } else if (!strcmp(cmd, "lookup")) {
         s = get_session(current->pid);
-        if (s && s->len < PROC_BUF_SIZE) {
-            res = ht_search(table, key);
-            s->len += scnprintf(
-                s->buf + s->len,
-                PROC_BUF_SIZE - s->len,
-                res ? "lookup %s=%s\n"
-                    : "lookup %s: not found\n",
-                key, res ?: ""
-            );
+        if (s) {
+            s->len = 0; // Reset buffer before writing new result
+            char values[PROC_BUF_SIZE];
+            char *res = ht_search_all(table, key, values, sizeof(values));
+            if (res)
+                s->len = scnprintf(s->buf, PROC_BUF_SIZE, "lookup %s=%s\n", key, values);
+            else
+                s->len = scnprintf(s->buf, PROC_BUF_SIZE, "lookup %s: not found\n", key);
         }
     }
 
@@ -130,10 +133,14 @@ static ssize_t ht_read(struct file *file,
     for (i = 0; i < table->capacity; i++) {
         e = table->entries[i];
         while (e) {
-            len += scnprintf(buf + len,
-                             PROC_BUF_SIZE - len,
-                             "%s=%s\n",
-                             e->key, e->value);
+            value_node *vn = e->values;
+            while (vn) {
+                len += scnprintf(buf + len,
+                                 PROC_BUF_SIZE - len,
+                                 "%s=%s\n",
+                                 e->key, vn->value);
+                vn = vn->next;
+            }
             if (len >= PROC_BUF_SIZE - 1)
                 break;
             e = e->next;
@@ -204,16 +211,14 @@ static ssize_t daemon_ht_read(struct file *file,
     down_read(&ht_sem);
 
     for (i = 0; i < table->capacity; i++) {
-        e = table->entries[i];
-        while (e) {
-            len += scnprintf(buf + len,
-                             PROC_BUF_SIZE - len,
-                             "%s %s\n",
-                             e->key, e->value);
-            if (len >= PROC_BUF_SIZE - 1)
-                break;
-            e = e->next;
-        }
+        value_node *vn = e->values;
+            while (vn) {
+                len += scnprintf(buf + len,
+                                 PROC_BUF_SIZE - len,
+                                 "%s=%s\n",
+                                 e->key, vn->value);
+                vn = vn->next;
+            }
     }
 
     up_read(&ht_sem);
@@ -227,6 +232,33 @@ static const struct proc_ops hashtable_proc_ops = {
     .proc_read = daemon_ht_read,
 };
 
+// For /proc/daemonpid
+// This allows the daemon to write its PID to the kernel, which can be used for signaling.
+static ssize_t daemonpid_write(struct file *file, const char __user *buffer, size_t count, loff_t *ppos)
+{
+    if (count >= sizeof(daemon_pid_buf))
+        return -EINVAL;
+    if (copy_from_user(daemon_pid_buf, buffer, count))
+        return -EFAULT;
+    daemon_pid_buf[count] = '\0';
+    daemon_pid_len = count;
+    printk(KERN_INFO "daemonpid written: %s", daemon_pid_buf);
+    return count;
+}
+
+static ssize_t daemonpid_read(struct file *file, char __user *user_buffer, size_t count, loff_t *offs)
+{
+    if (*offs > 0 || daemon_pid_len == 0)
+        return 0;
+    return simple_read_from_buffer(user_buffer, count, offs, daemon_pid_buf, daemon_pid_len);
+}
+
+static const struct proc_ops daemonpid_proc_ops = {
+    .proc_write = daemonpid_write,
+    .proc_read  = daemonpid_read,
+};
+
+static struct proc_dir_entry *proc_daemonpid;
 
 //module init/exit (temporary)
 static int __init ht_init(void)
@@ -235,10 +267,10 @@ static int __init ht_init(void)
     if (!table)
         return -ENOMEM;
 
-    proc_ht = proc_create("ht", 0666, NULL, &ht_proc_ops);
-    proc_lookup = proc_create("lookup", 0444, NULL, &lookup_proc_ops);
-    proc_hashtable = proc_create("hashtable", 0444, NULL,
-                                 &hashtable_proc_ops);
+    proc_ht         = proc_create("ht", 0666, NULL, &ht_proc_ops);
+    proc_lookup     = proc_create("lookup", 0444, NULL, &lookup_proc_ops);
+    proc_hashtable  = proc_create("hashtable", 0444, NULL, &hashtable_proc_ops);
+    proc_daemonpid  = proc_create("daemonpid", 0666, NULL, &daemonpid_proc_ops);
 
     if (!proc_ht || !proc_lookup || !proc_hashtable) {
         destroy_ht(table);
@@ -256,6 +288,7 @@ static void __exit ht_exit(void)
     proc_remove(proc_ht);
     proc_remove(proc_lookup);
     proc_remove(proc_hashtable);
+    proc_remove(proc_daemonpid);
 
     down_write(&ht_sem);
     list_for_each_entry_safe(s, tmp, &lookup_sessions, list) {
