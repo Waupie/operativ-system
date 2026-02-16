@@ -19,6 +19,6 @@ void write_pid_to_proc();
 void save_hashtable(void);
 void daemonize();
 void daemon_func(void);
-
+void restore_hashtable(void);
 
 #endif
