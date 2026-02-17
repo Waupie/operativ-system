@@ -8,9 +8,10 @@
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 
+#include "net_kvstore.h"
 #include "hashtable_module.h"
+#include "kvstore_commands.h"
 
-#define PROC_BUF_SIZE 512
 
 static DECLARE_RWSEM(ht_sem);
 
@@ -22,13 +23,9 @@ static pid_t daemon_pid = -1;
 
 static ht *table;
 
-struct cmd_entry {
-    char text[PROC_BUF_SIZE];
-    struct list_head list;
-};
-static LIST_HEAD(cmd_history);
+LIST_HEAD(cmd_history);
 
-static void signal_daemon(void);
+//static void signal_daemon(void);
 
 void signal_daemon(void)
 {
@@ -61,8 +58,6 @@ static ssize_t ht_write(struct file *file,
                         loff_t *offs)
 {
     char buf[256];
-    char cmd[16], key[64], value[64];
-    int ret = 0;
     char output[PROC_BUF_SIZE];
 
     memset(buf, 0, sizeof(buf));
@@ -77,38 +72,8 @@ static ssize_t ht_write(struct file *file,
     buf[count] = '\0';
     buf[strcspn(buf, "\n")] = 0;
 
-    if (sscanf(buf, "%15s %63s %63s", cmd, key, value) < 1)
-        return count;
-
-    if (!strcmp(cmd, "insert")) {
-        down_write(&ht_sem);
-        ret = ht_insert(table, key, value);
-        signal_daemon();
-        up_write(&ht_sem);
-
-        snprintf(output, PROC_BUF_SIZE, ret ? "Insert failed" : "Inserted key: %s, value: %s", key, value);
-
-    } else if (!strcmp(cmd, "delete")) {
-        down_write(&ht_sem);
-        ret = ht_delete(table, key);
-        signal_daemon();
-        up_write(&ht_sem);
-
-        snprintf(output, PROC_BUF_SIZE, ret ? "Delete failed" : "Deleted key: %s", key);
-
-    } else if (!strcmp(cmd, "lookup")) {
-        const char *res;
-        down_read(&ht_sem);
-        res = ht_search(table, key);
-        if (res)
-            snprintf(output, PROC_BUF_SIZE, "Lookup on key: %s, gave value: %s", key, res);
-        else
-            snprintf(output, PROC_BUF_SIZE, "Not found");
-        up_read(&ht_sem);
-
-    } else {
-        snprintf(output, PROC_BUF_SIZE, "Unknown command");
-    }
+    process_kv_command(buf, output, sizeof(output), &ht_sem, table);
+    signal_daemon();
 
     {
         struct cmd_entry *entry = kmalloc(sizeof(*entry), GFP_KERNEL);
@@ -263,13 +228,20 @@ int init_module(void)
         return -ENOMEM;
     }
 
-    printk(KERN_INFO "Hashtable proc module loaded\n");
+    // Register Netfilter UDP hook (moved to net_kvstore.c)
+    net_kvstore_init(&ht_sem, table);
+
+    printk(KERN_INFO "Hashtable proc module loaded with Netfilter UDP hook\n");
     return 0;
 }
 
 void cleanup_module(void)
 {
     struct cmd_entry *entry, *tmp;
+
+
+    // Unregister Netfilter UDP hook (moved to net_kvstore.c)
+    net_kvstore_exit();
 
     proc_remove(proc_ht);
     proc_remove(proc_hashtable);
