@@ -26,7 +26,7 @@ void save_hashtable(void)
         perror("Failed to open /proc/hashtable in daemon");
         return;
     }
-    FILE *backup = fopen("/tmp/hashtable_backup.txt", "w");
+    FILE *backup = fopen("/var/tmp/hashtable_backup.txt", "w");
     if(!backup)
     {
         perror("Failed to open backup file in daemon");
@@ -88,11 +88,32 @@ void daemonize()
 
 }
 
+void restore_hashtable(void)
+{
+    FILE *backup = fopen("/var/tmp/hashtable_backup.txt", "r");
+    if (!backup) {
+        // No backup file, nothing to restore
+        return;
+    }
+    char buf[512];
+    while (fgets(buf, sizeof(buf), backup)) {
+        char key[256], value[256];
+        if (sscanf(buf, "%255s %255s", key, value) == 2) {
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "echo \"insert %s %s\" > /proc/ht", key, value);
+            (void)system(cmd);
+        }
+    }
+    fclose(backup);
+}
+
 int main(void)
 {
     daemonize();
 
     write_pid_to_proc();
+
+    restore_hashtable();
 
     while (1) {
         pause(); //wait for signal
