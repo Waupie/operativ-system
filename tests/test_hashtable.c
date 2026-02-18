@@ -1,5 +1,5 @@
 
-#include "../src/hashtable_module.h"
+#include "../src/kernel/hashtable_module.h"
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/kthread.h>
