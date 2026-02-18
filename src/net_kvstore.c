@@ -12,6 +12,7 @@
 #include "hashtable_module.h"
 #include "kvstore_commands.h"
 #include "net_kvstore.h"
+#include "daemon_module.h"
 
 #define KVSTORE_PORT 5555
 #define NETPOLL_REMOTE_IP "192.168.1.100"
@@ -42,14 +43,12 @@ int process_kv_command(const char *input, char *output, size_t outlen, struct rw
         down_write(sem);
         ret = ht_insert(table, key, value);
         up_write(sem);
-        extern void signal_daemon(void);
         signal_daemon();
         snprintf(output, outlen, ret ? "Insert failed" : "Inserted key: %s, value: %s", key, value);
     } else if (!strcmp(cmd, "delete")) {
         down_write(sem);
         ret = ht_delete(table, key);
         up_write(sem);
-        extern void signal_daemon(void);
         signal_daemon();
         snprintf(output, outlen, ret ? "Delete failed" : "Deleted key: %s", key);
     } else if (!strcmp(cmd, "lookup")) {
@@ -155,7 +154,3 @@ void net_kvstore_exit(void)
         netpoll_initialized = 0;
     }
 }
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jack Edh");
-MODULE_DESCRIPTION("Netfilter UDP hook for kernel key-value store");

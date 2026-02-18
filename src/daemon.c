@@ -101,7 +101,11 @@ void restore_hashtable(void)
         if (sscanf(buf, "%255s %255s", key, value) == 2) {
             char cmd[1024];
             snprintf(cmd, sizeof(cmd), "echo \"insert %s %s\" > /proc/ht", key, value);
-            (void)system(cmd);
+            //system(cmd);
+            int ret = system(cmd);
+            if (ret != 0) {
+                perror("system() failed");
+            }
         }
     }
     fclose(backup);

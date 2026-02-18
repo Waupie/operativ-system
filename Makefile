@@ -1,5 +1,5 @@
 obj-m += my_module.o
-my_module-objs := src/main_module.o src/hashtable_module.o src/net_kvstore.o tests/test_hashtable.o
+my_module-objs := src/main_module.o src/hashtable_module.o src/net_kvstore.o src/daemon_module.o src/kvstore.o tests/test_hashtable.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
