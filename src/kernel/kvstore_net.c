@@ -1,18 +1,4 @@
-#include <linux/string.h>
-
-#include <linux/inet.h>
-
-#include <linux/module.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_ipv4.h>
-#include <linux/ip.h>
-#include <linux/udp.h>
-#include <linux/rwsem.h>
-#include <linux/netpoll.h>
-#include "hashtable_module.h"
-#include "kvstore_commands.h"
-#include "net_kvstore.h"
-#include "daemon_module.h"
+#include "kvstore_net.h"
 
 #define KVSTORE_PORT 5555
 #define NETPOLL_REMOTE_IP "192.168.1.100"
