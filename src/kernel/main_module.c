@@ -8,7 +8,7 @@
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 
-#include "net_kvstore.h"
+#include "kvstore_net.h"
 #include "hashtable_module.h"
 #include "kvstore_commands.h"
 #include "daemon_module.h"

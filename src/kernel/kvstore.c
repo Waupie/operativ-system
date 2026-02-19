@@ -1,7 +1,6 @@
 #include "kvstore.h"
 
 extern struct rw_semaphore ht_sem; // refers to ht_sem in main_module.c, used for synchronizing access to cmd_history and table
-extern struct list_head cmd_history; // refers to cmd_history in main_module.c, used for storing command history for lookup results
 extern ht *table; // refers to table in main_module.c
 
 ssize_t ht_write(struct file *file,
