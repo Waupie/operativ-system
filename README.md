@@ -1,75 +1,174 @@
 # Operativ-System
 
-This project implements a Linux kernel module providing a persistent hashtable, with user-space interaction and backup/restore support via a daemon process. Networking support is included via Netfilter hooks.
+A Linux kernel module providing an in-memory key-value store (hashtable), with user-space remote access via TCP sockets, debug message forwarding over UDP, and a daemon for backup/restore.
+
+## Architecture
+
+```
+Remote Machine                      User Space (daemon)                  Kernel Space
+┌──────────┐    TCP port 5555    ┌───────────────────┐                ┌──────────────┐
+│  netcat   │ ────────────────▶  │  net_server        │ ──write──▶   │  /proc/ht     │
+│  client   │ ◀──────────────── │  (thread per conn) │ ◀─read───    │  (kvstore.c)  │
+└──────────┘    response         └───────────────────┘                └──────────────┘
+                                        │                                    │
+                                        │ debug msgs (UDP port 6666)   SIGUSR1 signal
+                                        ▼                                    │
+                                 ┌───────────────┐                   ┌──────────────┐
+                                 │  Debug host    │                   │  daemon main  │
+                                 │  (nc -lu 6666) │                   │  thread       │
+                                 └───────────────┘                   │  → saves to   │
+                                                                      │    disk        │
+                                                                      └──────────────┘
+```
 
 ## Quick Start
 
 ### Build, Load Module, and Start Daemon
+
 ```bash
+chmod +x build_and_run.sh clean_and_remove.sh
 ./build_and_run.sh
 ```
+
 This script will:
+- Kill any old daemon processes
 - Clean previous builds
 - Build the kernel module and user-space daemon
 - Remove the old kernel module if loaded
 - Insert the new kernel module
-- Start the daemon in the background
+- Start the daemon (with TCP server on port 5555)
 
 ### Clean and Remove Module
+
 ```bash
 ./clean_and_remove.sh
 ```
+
 This script will:
+- Kill any running daemon processes
 - Remove the kernel module if loaded
 - Clean all build files
 
 ## Manual Usage
 
-- `make` to compile everything
-- `sudo insmod my_module.ko` to load the kernel module
-- `sudo rmmod my_module` to unload the kernel module
-- `make clean` to clean build files
-- `sudo dmesg` or `sudo dmesg | tail` to view kernel logs
-
-## Interacting with the Kernel Module
-
-- Write commands to `/proc/ht` (e.g., `echo "insert foo bar" | sudo tee /proc/ht`)
-- Read command history from `/proc/ht` (e.g., `cat /proc/ht`)
-- Read the full hashtable from `/proc/hashtable` (for daemon backup)
-- Write/read daemon PID to/from `/proc/daemonpid`
-
-## Interacting Over the Network (UDP)
-
-The kernel module supports remote access via UDP. You can send commands to the module from another machine using netcat (nc):
-
-```
-echo "insert dog baileys" | nc -u <server-ip> 5555
-echo "lookup dog" | nc -u <server-ip> 5555
+```bash
+make                        # Build everything
+sudo insmod my_module.ko    # Load kernel module
+./daemon                    # Start daemon (daemonizes itself)
+sudo rmmod my_module        # Unload kernel module
+make clean                  # Clean build files
+sudo dmesg | tail           # View kernel logs
 ```
 
-Replace `<server-ip>` with the IP address of the machine running the kernel module (e.g., 192.168.8.186).
+## Interacting Locally
 
-This allows you to insert and look up key-value pairs remotely over the network.
+Write commands directly to `/proc/ht`:
 
+```bash
+# Insert a key-value pair
+echo "insert dog baileys" > /proc/ht
+
+# Delete a key
+echo "delete dog" > /proc/ht
+
+# Lookup a key (result appears in command history)
+echo "lookup dog" > /proc/ht
+
+# Read command history
+cat /proc/ht
+
+# Read the full hashtable (raw key-value dump)
+cat /proc/hashtable
+```
+
+## Interacting Remotely (TCP)
+
+From any machine on the network, use `nc` (netcat) to send commands over TCP:
+
+```bash
+# Insert
+echo "insert dog baileys" | nc <server-ip> 5555
+
+# Lookup
+echo "lookup dog" | nc <server-ip> 5555
+
+# Delete
+echo "delete dog" | nc <server-ip> 5555
+```
+
+Replace `<server-ip>` with the IP of the machine running the module (e.g., `192.168.8.186`).
+
+**Supported commands:** `insert <key> <value>`, `delete <key>`, `lookup <key>`
+
+## Debug Messages (UDP)
+
+The daemon can send debug messages over UDP to a remote machine. Start the daemon with debug options:
+
+```bash
+./daemon --debug-ip 192.168.1.100 --debug-port 6666
+```
+
+On the remote machine, listen for debug messages:
+
+```bash
+nc -lu 6666
+```
+
+You'll see messages like:
+```
+[REMOTE] from 192.168.8.50:43210 cmd: insert dog baileys
+[DAEMON] hashtable saved to /var/tmp/hashtable_backup.txt
+```
+
+### Daemon Options
+
+| Flag | Description |
+|---|---|
+| `-d, --debug-ip IP` | Enable debug messages to this remote IP |
+| `-p, --debug-port PORT` | Debug UDP port (default: 6666) |
+| `-n, --no-daemon` | Run in foreground (don't daemonize) |
+| `-h, --help` | Show help |
+
+## Proc Interfaces
+
+| Path | Read | Write | Purpose |
+|---|---|---|---|
+| `/proc/ht` | Command history (insert/delete log) | Execute commands (`insert`, `delete`, `lookup`) | Main command interface |
+| `/proc/hashtable` | Raw key-value dump | — | Live view of hashtable contents |
+| `/proc/daemonpid` | Current daemon PID | Set daemon PID | Kernel ↔ daemon communication |
 
 ## Daemon Process
 
-- The user-space daemon (`daemon`) runs in the background, writes its PID to `/proc/daemonpid`, and listens for signals from the kernel.
-- On signal, the daemon saves the hashtable to `/var/tmp/hashtable_backup.txt`.
-- On startup, the daemon restores the hashtable from the backup file if it exists.
+- Double-forks to become a background daemon
+- Registers its PID with the kernel via `/proc/daemonpid`
+- Restores hashtable from `/var/tmp/hashtable_backup.txt` on startup
+- Runs a TCP server thread (port 5555) for remote access
+- On `SIGUSR1` from the kernel (triggered by insert/delete), saves the hashtable to disk
 
-## Features
+## Project Structure
 
-- Persistent hashtable in kernel space
-- Command history for all non-lookup operations
-- User-space daemon for backup/restore
-- Netfilter UDP hook for networked access (see source for details)
-- Test code in `tests/`
+```
+├── build_and_run.sh              # Build and start everything
+├── clean_and_remove.sh           # Stop and clean everything
+├── Makefile                      # Build kernel module + daemon
+├── src/
+│   ├── kernel/
+│   │   ├── main_module.c         # Module init/cleanup, proc entries
+│   │   ├── hashtable_module.c/h  # Hashtable implementation (FNV-1a)
+│   │   ├── kvstore.c/h           # /proc/ht read/write + command processing
+│   │   ├── daemon_module.c/h     # Signal daemon, /proc/hashtable, /proc/daemonpid
+│   │   └── kvstore_commands.h    # Command history structures
+│   └── user/
+│       ├── daemon.c/h            # User-space daemon (backup/restore + main loop)
+│       ├── net_server.c/h        # TCP server for remote access (port 5555)
+│       └── debug_net.c/h         # UDP debug message sender (port 6666)
+└── tests/
+    └── test_hashtable.c          # Hashtable unit tests
+```
 
 ## Notes
 
 - Scripts must be executable: `chmod +x build_and_run.sh clean_and_remove.sh`
 - Some commands require root privileges (use `sudo`)
-
----
-For more details, see the source files in `src/` and tests in `tests/`.
+- The TCP server spawns a thread per connection with a 5-second timeout
+- Debug message sending is configurable at runtime (no recompile needed)

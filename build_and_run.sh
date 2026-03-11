@@ -3,6 +3,12 @@
 # Exit on error
 set -e
 
+# Kill any old daemon processes
+if pkill -x daemon 2>/dev/null; then
+    echo "Killed old daemon process(es)."
+    sleep 1
+fi
+
 # Clean previous builds
 make clean
 
@@ -20,6 +26,6 @@ echo "Inserting $MODULE module..."
 sudo insmod my_module.ko
 
 echo "Starting daemon..."
-./daemon &
+./daemon
 
 echo "Build and startup complete."

@@ -8,7 +8,6 @@
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 
-#include "kvstore_net.h"
 #include "hashtable_module.h"
 #include "kvstore_commands.h"
 #include "daemon_module.h"
@@ -55,20 +54,13 @@ int init_module(void)
         return -ENOMEM;
     }
 
-    // Register Netfilter UDP hook (moved to net_kvstore.c)
-    net_kvstore_init(&ht_sem, table);
-
-    printk(KERN_INFO "Hashtable proc module loaded with Netfilter UDP hook\n");
+    printk(KERN_INFO "Hashtable proc module loaded (networking in user space)\n");
     return 0;
 }
 
 void cleanup_module(void)
 {
     struct cmd_entry *entry, *tmp;
-
-
-    // Unregister Netfilter UDP hook (moved to net_kvstore.c)
-    net_kvstore_exit();
 
     proc_remove(proc_ht);
     proc_remove(proc_hashtable);
