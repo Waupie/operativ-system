@@ -1,10 +1,16 @@
+#define _GNU_SOURCE
 #include "daemon.h"
+#include "net_server.h"
+#include "debug_net.h"
+
+static pthread_t net_thread;
 
 void handle_signal(int sig) {
-    save_flag = 1;
+    if (sig == SIGUSR1)
+        save_flag = 1;
 }
 
-void write_pid_to_proc() {
+void write_pid_to_proc(void) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%d\n", getpid());
     int fd = open("/proc/daemonpid", O_WRONLY | O_TRUNC);
@@ -40,9 +46,11 @@ void save_hashtable(void)
     }
     fclose(fp);
     fclose(backup);
+
+    debug_send("[DAEMON] hashtable saved to /var/tmp/hashtable_backup.txt");
 }
 
-void daemonize()
+void daemonize(void)
 {
     pid_t pid = fork();
     if (pid < 0) {
@@ -72,7 +80,7 @@ void daemonize()
         perror("Second fork failed");
         exit(1);
     }
-    
+
     if (pid > 0) {
         exit(0); // first child exits
     }
@@ -86,6 +94,10 @@ void daemonize()
         close(x);
     }
 
+    /* Reopen stdin/stdout/stderr to /dev/null */
+    open("/dev/null", O_RDONLY); /* stdin  */
+    open("/dev/null", O_WRONLY); /* stdout */
+    open("/dev/null", O_WRONLY); /* stderr */
 }
 
 void restore_hashtable(void)
@@ -101,7 +113,6 @@ void restore_hashtable(void)
         if (sscanf(buf, "%255s %255s", key, value) == 2) {
             char cmd[1024];
             snprintf(cmd, sizeof(cmd), "echo \"insert %s %s\" > /proc/ht", key, value);
-            //system(cmd);
             int ret = system(cmd);
             if (ret != 0) {
                 perror("system() failed");
@@ -109,23 +120,87 @@ void restore_hashtable(void)
         }
     }
     fclose(backup);
+    debug_send("[DAEMON] hashtable restored from backup");
 }
 
-int main(void)
+static void print_usage(const char *prog)
 {
-    daemonize();
+    fprintf(stderr,
+        "Usage: %s [OPTIONS]\n"
+        "  -d, --debug-ip IP     Enable debug messages to remote IP\n"
+        "  -p, --debug-port PORT Debug UDP port (default: 6666)\n"
+        "  -n, --no-daemon       Run in foreground (don't daemonize)\n"
+        "  -h, --help            Show this help\n",
+        prog);
+}
+
+int main(int argc, char *argv[])
+{
+    const char *debug_ip = NULL;
+    int debug_port = DEBUG_DEFAULT_PORT;
+    int foreground = 0;
+
+    static struct option long_opts[] = {
+        {"debug-ip",   required_argument, NULL, 'd'},
+        {"debug-port", required_argument, NULL, 'p'},
+        {"no-daemon",  no_argument,       NULL, 'n'},
+        {"help",       no_argument,       NULL, 'h'},
+        {NULL, 0, NULL, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "d:p:nh", long_opts, NULL)) != -1) {
+        switch (opt) {
+            case 'd':
+                debug_ip = optarg;
+                break;
+            case 'p':
+                debug_port = atoi(optarg);
+                break;
+            case 'n':
+                foreground = 1;
+                break;
+            case 'h':
+            default:
+                print_usage(argv[0]);
+                exit(0);
+        }
+    }
+
+    if (!foreground)
+        daemonize();
+
+    /* Initialize debug message sender if configured */
+    if (debug_ip) {
+        if (debug_init(debug_ip, debug_port) == 0) {
+            debug_send("[DAEMON] started, debug messages enabled");
+        }
+    }
 
     write_pid_to_proc();
-
     restore_hashtable();
 
+    /* Start the UDP network server in a separate thread */
+    if (pthread_create(&net_thread, NULL, net_server_run, NULL) != 0) {
+        perror("Failed to start network server thread");
+    } else {
+        debug_send("[DAEMON] network server started on UDP port 5555");
+    }
+
+    /* Main daemon loop: wait for signals */
     while (1) {
-        pause(); //wait for signal
+        pause(); /* wait for signal */
 
         if (save_flag) {
             save_hashtable();
             save_flag = 0;
         }
     }
+
+    /* Cleanup (unreachable, but good practice) */
+    net_server_stop();
+    pthread_join(net_thread, NULL);
+    debug_cleanup();
+
     return 0;
 }
