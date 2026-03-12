@@ -1,4 +1,5 @@
 #include "daemon_module.h"
+#include "kvstore.h"
 
 extern struct rw_semaphore ht_sem; // refers to ht_sem in main_module.c, used for synchronizing access to cmd_history and table
 extern ht *table; // refers to table in main_module.c
