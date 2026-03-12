@@ -3,7 +3,6 @@
 static volatile int server_running = 1;
 static int server_fd = -1;
 
-
 /**
  * Forward a command string to the kernel via /proc/ht.
  * For insert/delete: write to /proc/ht.
@@ -246,16 +245,55 @@ void net_server_stop(void)
     }
 }
 
+static int pam_password_conv(int num_msg, const struct pam_message **msg,
+                             struct pam_response **resp, void *appdata_ptr)
+{
+    struct pam_response *replies;
+    const char *password = appdata_ptr;
+    int i;
+
+    if (!msg || !resp || !password || num_msg <= 0)
+        return PAM_CONV_ERR;
+
+    replies = calloc((size_t)num_msg, sizeof(*replies));
+    if (!replies)
+        return PAM_CONV_ERR;
+
+    for (i = 0; i < num_msg; i++) {
+        switch (msg[i]->msg_style) {
+        case PAM_PROMPT_ECHO_OFF:
+        case PAM_PROMPT_ECHO_ON:
+            replies[i].resp = strdup(password);
+            if (!replies[i].resp)
+                goto fail;
+            break;
+        case PAM_TEXT_INFO:
+        case PAM_ERROR_MSG:
+            replies[i].resp = NULL;
+            break;
+        default:
+            goto fail;
+        }
+    }
+
+    *resp = replies;
+    return PAM_SUCCESS;
+
+fail:
+    for (i = 0; i < num_msg; i++)
+        free(replies[i].resp);
+    free(replies);
+    return PAM_CONV_ERR;
+}
+
 int authenticate_user(const char *user, const char *pass)
 {
     pam_handle_t *pamh = NULL;
-    struct pam_conv conv = { misc_conv, NULL };
+    struct pam_conv conv = { pam_password_conv, (void *)pass };
 
     int ret = pam_start("login", user, &conv, &pamh);
     if (ret != PAM_SUCCESS)
         return -1;
-
-    pam_set_item(pamh, PAM_AUTHTOK, pass);
 
     ret = pam_authenticate(pamh, 0);
     if (ret == PAM_SUCCESS)
