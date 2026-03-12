@@ -7,7 +7,6 @@
 #include <linux/sched/signal.h>
 #include <linux/pid.h>
 
-#include "kvstore_commands.h"
 #include "hashtable_module.h"
 
 void signal_daemon(void);
