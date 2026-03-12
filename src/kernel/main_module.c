@@ -40,7 +40,7 @@ int init_module(void)
     if (!table)
         return -ENOMEM;
 
-    proc_ht = proc_create("ht", 0220, NULL, &ht_proc_ops);
+    proc_ht = proc_create("ht", 0222, NULL, &ht_proc_ops);
     proc_hashtable = proc_create("hashtable", 0444, NULL, &hashtable_proc_ops);
     proc_daemonpid = proc_create("daemonpid", 0666, NULL, &daemonpid_proc_ops);
 
