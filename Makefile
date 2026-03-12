@@ -12,7 +12,7 @@ modules:
 	make -C $(KDIR) M=$(PWD) modules
 
 daemon: $(DAEMON_SRC)
-	gcc -Wall -O2 -pthread -o daemon $(DAEMON_SRC)
+	gcc -Wall -O2 -pthread -o daemon $(DAEMON_SRC) -lpam -lpam_misc
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean

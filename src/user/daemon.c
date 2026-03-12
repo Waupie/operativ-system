@@ -180,7 +180,7 @@ int main(int argc, char *argv[])
     write_pid_to_proc();
     restore_hashtable();
 
-    /* Start the UDP network server in a separate thread */
+    /* Start the tpc network server in a separate thread */
     if (pthread_create(&net_thread, NULL, net_server_run, NULL) != 0) {
         perror("Failed to start network server thread");
     } else {
