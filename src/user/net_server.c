@@ -1,34 +1,15 @@
 #include "net_server.h"
-#include "debug_net.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <pthread.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
 
 static volatile int server_running = 1;
 static int server_fd = -1;
 
-/* Per-client connection info passed to the handler thread */
-typedef struct {
-    int fd;
-    char addr[INET_ADDRSTRLEN];
-    int port;
-} client_info;
 
 /**
  * Forward a command string to the kernel via /proc/ht.
  * For insert/delete: write to /proc/ht.
  * For lookup: write to /proc/ht, then read the response.
  */
-static int forward_to_proc(const char *cmd, char *response, size_t resp_len)
+int forward_to_proc(const char *cmd, char *response, size_t resp_len)
 {
     int fd;
     ssize_t n;
@@ -103,7 +84,7 @@ static int forward_to_proc(const char *cmd, char *response, size_t resp_len)
 /**
  * Thread handler for a single client connection.
  */
-static void *handle_client(void *arg)
+void *handle_client(void *arg)
 {
     client_info *ci = (client_info *)arg;
     char buf[NET_BUF_SIZE];
@@ -111,30 +92,67 @@ static void *handle_client(void *arg)
     char debug_msg[NET_BUF_SIZE];
     ssize_t n;
 
-    /* Set a timeout so a stuck client doesn't block this thread forever */
+    char username[64];
+    char password[64];
+
+    /* Set timeout */
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(ci->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(ci->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    /* Read the command from the client */
+    /* ---- STEP 1: READ AUTH LINE ---- */
     memset(buf, 0, sizeof(buf));
     n = read(ci->fd, buf, sizeof(buf) - 1);
-    if (n > 0) {
-        buf[n] = '\0';
+    if (n <= 0)
+        goto cleanup;
 
-        /* Send debug message about the incoming request */
-        snprintf(debug_msg, sizeof(debug_msg), "[REMOTE] from %s:%d cmd: %.256s",
-                 ci->addr, ci->port, buf);
-        debug_send(debug_msg);
+    buf[n] = '\0';
 
-        /* Process the command */
-        memset(response, 0, sizeof(response));
-        forward_to_proc(buf, response, sizeof(response));
-
-        /* Send response back */
-        write(ci->fd, response, strlen(response));
+    if (sscanf(buf, "AUTH %63s %63s", username, password) != 2) {
+        if(write(ci->fd, "ERROR: expected AUTH <user> <pass>\n", 35) < 0)
+        {
+            perror("Auth error write");
+        }
+        goto cleanup;
     }
 
+    if (authenticate_user(username, password) != 0) {
+        if (write(ci->fd, "AUTH FAIL\n", 10) < 0) {
+            perror("Auth fail write");
+        }
+        goto cleanup;
+    }
+
+    if (write(ci->fd, "AUTH OK\n", 8) < 0) {
+        perror("Auth ok write");
+        goto cleanup;
+    }
+
+    /* ---- STEP 2: READ COMMAND ---- */
+    memset(buf, 0, sizeof(buf));
+    n = read(ci->fd, buf, sizeof(buf) - 1);
+    if (n <= 0)
+        goto cleanup;
+
+    buf[n] = '\0';
+
+    /* Debug message */
+    snprintf(debug_msg, sizeof(debug_msg),
+             "[REMOTE] from %s:%d user:%s cmd: %.256s",
+             ci->addr, ci->port, username, buf);
+
+    debug_send(debug_msg);
+
+    /* Forward command */
+    memset(response, 0, sizeof(response));
+    forward_to_proc(buf, response, sizeof(response));
+
+    if(write(ci->fd, response, strlen(response)) < 0) {
+        perror("response write");
+        goto cleanup;
+    }
+
+cleanup:
     close(ci->fd);
     free(ci);
     return NULL;
@@ -226,4 +244,24 @@ void net_server_stop(void)
         close(server_fd);
         server_fd = -1;
     }
+}
+
+int authenticate_user(const char *user, const char *pass)
+{
+    pam_handle_t *pamh = NULL;
+    struct pam_conv conv = { misc_conv, NULL };
+
+    int ret = pam_start("login", user, &conv, &pamh);
+    if (ret != PAM_SUCCESS)
+        return -1;
+
+    pam_set_item(pamh, PAM_AUTHTOK, pass);
+
+    ret = pam_authenticate(pamh, 0);
+    if (ret == PAM_SUCCESS)
+        ret = pam_acct_mgmt(pamh, 0);
+
+    pam_end(pamh, ret);
+
+    return (ret == PAM_SUCCESS) ? 0 : -1;
 }

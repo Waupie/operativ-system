@@ -35,7 +35,7 @@ ssize_t daemon_ht_read(struct file *file,
 {
     char buf[PROC_BUF_SIZE];
     size_t len = 0;
-    int i;
+    int i; 
     ht_entry *e;
 
     if (*offs > 0)
