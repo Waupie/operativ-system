@@ -1,15 +1,15 @@
 # Operativ-System
 
-A Linux kernel module providing an in-memory key-value store (hashtable), with user-space remote access via TCP sockets, debug message forwarding over UDP, and a daemon for backup/restore.
+A Linux kernel module providing an in-memory key-value store (hashtable), with authenticated user-space remote access via TCP sockets, debug message forwarding over UDP, and a daemon for backup/restore.
 
 ## Architecture
 
 ```
-Remote Machine                      User Space (daemon)                  Kernel Space
-┌──────────┐    TCP port 5555    ┌───────────────────┐                ┌──────────────┐
-│  netcat   │ ────────────────▶  │  net_server        │ ──write──▶   │  /proc/ht     │
-│  client   │ ◀──────────────── │  (thread per conn) │ ◀─read───    │  (kvstore.c)  │
-└──────────┘    response         └───────────────────┘                └──────────────┘
+Remote Machine                        User Space (daemon)                Kernel Space
+┌──────────┐    TCP port 5555      ┌───────────────────┐              ┌──────────────┐
+│  netcat   │ ─ AUTH + command ─▶  │  net_server        │ ──write──▶ │  /proc/ht     │
+│  client   │ ◀── AUTH/result ─── │  (PAM + per conn)  │ ◀─read───  │  (kvstore.c)  │
+└──────────┘      response         └───────────────────┘              └──────────────┘
                                         │                                    │
                                         │ debug msgs (UDP port 6666)   SIGUSR1 signal
                                         ▼                                    │
@@ -81,24 +81,42 @@ cat /proc/ht
 cat /proc/hashtable
 ```
 
-## Interacting Remotely (TCP)
+## Interacting Remotely (TCP + Authentication)
 
-From any machine on the network, use `nc` (netcat) to send commands over TCP:
+Remote TCP access requires an authentication step first:
+
+1. Send `AUTH <linux-username> <linux-password>`
+2. Wait for `AUTH OK`
+3. Send one key-value command (`insert`, `lookup`, `delete`)
+
+If authentication fails, the server replies with `AUTH FAIL` and closes the connection.
+
+Example sessions with `nc` (recommended pattern):
 
 ```bash
-# Insert
-echo "insert dog baileys" | nc <server-ip> 5555
+# Lookup after auth
+(echo "AUTH <user> <pass>"; sleep 0.1; echo "lookup dog") | nc <server-ip> 5555
 
-# Lookup
-echo "lookup dog" | nc <server-ip> 5555
+# Insert after auth
+(echo "AUTH <user> <pass>"; sleep 0.1; echo "insert dog baileys") | nc <server-ip> 5555
 
-# Delete
-echo "delete dog" | nc <server-ip> 5555
+# Delete after auth
+(echo "AUTH <user> <pass>"; sleep 0.1; echo "delete dog") | nc <server-ip> 5555
 ```
+
+`sleep 0.1` ensures the auth line is processed before the command is sent on the same TCP connection.
 
 Replace `<server-ip>` with the IP of the machine running the module (e.g., `192.168.8.186`).
 
-**Supported commands:** `insert <key> <value>`, `delete <key>`, `lookup <key>`
+**Auth line format:** `AUTH <user> <pass>`
+
+**Supported commands (after AUTH OK):** `insert <key> <value>`, `delete <key>`, `lookup <key>`
+
+### Authentication Notes
+
+- Authentication uses Linux PAM (`pam_authenticate` with the `login` service)
+- Credentials are validated against accounts on the server machine
+- The daemon must be built with PAM (`-lpam -lpam_misc`, already configured in `Makefile`)
 
 ## Debug Messages (UDP)
 
